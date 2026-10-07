@@ -19,10 +19,10 @@ contract DutchAuctionTest is TestBase {
     }
 
     function testBuyAndRefundExcess() public {
-        vm.warp(block.timestamp + 12 hours);
+        vm.warp(vm.getBlockTimestamp() + 12 hours);
         eq(auction.price(), 6 ether);
         vm.prank(ALICE);
-        auction.buy{value: 8 ether}(ALICE, 6 ether, block.timestamp);
+        auction.buy{value: 8 ether}(ALICE, 6 ether, vm.getBlockTimestamp());
         eq(nft.ownerOf(1), ALICE);
         eq(auction.credits(ALICE), 2 ether);
         eq(auction.credits(address(this)), 6 ether);
@@ -36,18 +36,18 @@ contract DutchAuctionTest is TestBase {
     function testCannotBuyTwiceOrUnderpay() public {
         vm.prank(ALICE);
         vm.expectRevert(DutchAuction.InvalidInput.selector);
-        auction.buy{value: 1 ether}(ALICE, 10 ether, block.timestamp);
+        auction.buy{value: 1 ether}(ALICE, 10 ether, vm.getBlockTimestamp());
         vm.prank(ALICE);
-        auction.buy{value: 10 ether}(ALICE, 10 ether, block.timestamp);
+        auction.buy{value: 10 ether}(ALICE, 10 ether, vm.getBlockTimestamp());
         vm.prank(BOB);
         vm.expectRevert(DutchAuction.WrongState.selector);
-        auction.buy{value: 10 ether}(BOB, 10 ether, block.timestamp);
+        auction.buy{value: 10 ether}(BOB, 10 ether, vm.getBlockTimestamp());
     }
 
     function testCancelOnlySellerAfterFloor() public {
         vm.expectRevert(DutchAuction.WrongState.selector);
         auction.cancel();
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         vm.prank(ALICE);
         vm.expectRevert(DutchAuction.Unauthorized.selector);
         auction.cancel();
@@ -56,20 +56,63 @@ contract DutchAuctionTest is TestBase {
     }
 
     function testExpiredBuyerDeadline() public {
-        vm.warp(block.timestamp + 1);
+        vm.warp(vm.getBlockTimestamp() + 1);
         vm.prank(ALICE);
         vm.expectRevert(DutchAuction.InvalidInput.selector);
-        auction.buy{value: 10 ether}(ALICE, 10 ether, block.timestamp - 1);
+        auction.buy{value: 10 ether}(ALICE, 10 ether, vm.getBlockTimestamp() - 1);
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzPriceMonotonicAndBounded(uint256 a, uint256 b) public {
         a = bound(a, 0, 10 days);
         b = bound(b, 0, 10 days);
-        uint256 start = block.timestamp;
+        uint256 start = vm.getBlockTimestamp();
         vm.warp(start + a);
         uint256 p1 = auction.price();
         vm.warp(start + a + b);
         uint256 p2 = auction.price();
         ok(p1 >= p2 && p2 >= 2 ether && p1 <= 10 ether);
+    }
+
+    function testSlippageAndInvalidRecipientLeaveNFTAndETHUntouched() public {
+        vm.prank(ALICE);
+        vm.expectRevert(DutchAuction.InvalidInput.selector);
+        auction.buy{value: 10 ether}(ALICE, 10 ether - 1, vm.getBlockTimestamp());
+        vm.prank(ALICE);
+        vm.expectRevert(DutchAuction.InvalidInput.selector);
+        auction.buy{value: 10 ether}(address(0), 10 ether, vm.getBlockTimestamp());
+        vm.prank(ALICE);
+        vm.expectRevert();
+        auction.buy{value: 10 ether}(address(this), 10 ether, vm.getBlockTimestamp());
+        eq(uint256(auction.state()), uint256(DutchAuction.State.Active));
+        eq(nft.ownerOf(1), address(auction));
+        eq(auction.totalCredits(), 0);
+        eq(address(auction).balance, 0);
+    }
+
+    function testActivationCannotRepeatAndCancellationIsTerminal() public {
+        vm.expectRevert(DutchAuction.WrongState.selector);
+        auction.activate();
+        vm.prank(ALICE);
+        vm.expectRevert(DutchAuction.Unauthorized.selector);
+        auction.activate();
+        vm.warp(auction.startedAt() + auction.duration());
+        auction.cancel();
+        vm.expectRevert(DutchAuction.WrongState.selector);
+        auction.activate();
+        vm.expectRevert(DutchAuction.WrongState.selector);
+        auction.cancel();
+        vm.prank(ALICE);
+        vm.expectRevert(DutchAuction.WrongState.selector);
+        auction.buy{value: 2 ether}(ALICE, 2 ether, vm.getBlockTimestamp());
+    }
+
+    event Sold(address indexed buyer, address indexed recipient, uint256 price);
+
+    function testBusinessEventIncludesActorAndAmount() public {
+        vm.expectEmit(true, true, false, true, address(auction));
+        emit Sold(ALICE, BOB, 10 ether);
+        vm.prank(ALICE);
+        auction.buy{value: 10 ether}(BOB, 10 ether, vm.getBlockTimestamp());
     }
 }

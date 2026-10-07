@@ -42,7 +42,7 @@ contract LendingPoolTest is TestBase {
         vm.prank(ALICE);
         pool.borrow(1000e6, 0);
         eq(pool.borrowRate(), 4e16);
-        vm.warp(block.timestamp + 365 days);
+        vm.warp(vm.getBlockTimestamp() + 365 days);
         pool.accrue();
         eq(pool.debtOf(ALICE), 1040e6);
     }
@@ -107,6 +107,7 @@ contract LendingPoolTest is TestBase {
         eq(loan.balanceOf(BOB), 100e6);
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzBorrowConservation(uint256 raw) public {
         uint256 amount = bound(raw, 1, 1500e6);
         uint256 cash = loan.balanceOf(address(pool));
@@ -122,7 +123,7 @@ contract LendingPoolTest is TestBase {
     function testFrequentAccrualDoesNotEraseFractionalInterest() public {
         vm.prank(ALICE);
         pool.borrow(1e6, 0);
-        uint256 start = block.timestamp;
+        uint256 start = vm.getBlockTimestamp();
         for (uint256 i = 1; i <= 100; ++i) {
             vm.warp(start + i * 100);
             pool.accrue();
@@ -146,5 +147,49 @@ contract LendingPoolTest is TestBase {
         callback.configure(address(guarded), abi.encodeCall(guarded.accrue, ()));
         guarded.supply(10 ether, 1);
         ok(callback.blocked());
+    }
+
+    function testZeroInputsAndSlippageRollback() public {
+        vm.expectRevert(LendingPool.InvalidInput.selector);
+        pool.borrow(0, 0);
+        vm.expectRevert(LendingPool.InvalidInput.selector);
+        pool.withdraw(0, 0);
+        vm.expectRevert(LendingPool.InvalidInput.selector);
+        pool.repay(ALICE, 0);
+        uint256 cash = loan.balanceOf(address(pool));
+        uint256 shares = pool.totalSupplyShares();
+        vm.expectRevert(LendingPool.Slippage.selector);
+        pool.supply(100e6, type(uint256).max);
+        eq(loan.balanceOf(address(pool)), cash);
+        eq(pool.totalSupplyShares(), shares);
+    }
+
+    function testIlliquidWithdrawalPreservesSupplierShares() public {
+        vm.prank(ALICE);
+        pool.borrow(1500e6, 0);
+        uint256 shares = pool.supplyShares(address(this));
+        vm.expectRevert(LendingPool.InsufficientLiquidity.selector);
+        pool.withdraw(shares, 0);
+        eq(pool.supplyShares(address(this)), shares);
+        eq(pool.totalSupplyShares(), shares);
+    }
+
+    function testRevertedBorrowOutputMinimumRollsBackDebt() public {
+        loan.setTax(100);
+        vm.prank(ALICE);
+        vm.expectRevert();
+        pool.borrow(100e6, 100e6);
+        eq(pool.totalDebtShares(), 0);
+        eq(pool.debtAssets(), 0);
+        eq(loan.balanceOf(address(pool)), 10000e6);
+    }
+
+    event Borrowed(address indexed user, uint256 assets, uint256 shares);
+
+    function testBusinessEventIncludesActorAndAmount() public {
+        vm.expectEmit(true, false, false, true, address(pool));
+        emit Borrowed(ALICE, 100e6, 100e6);
+        vm.prank(ALICE);
+        pool.borrow(100e6, 100e6);
     }
 }

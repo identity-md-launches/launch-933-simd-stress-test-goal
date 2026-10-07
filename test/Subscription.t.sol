@@ -46,7 +46,7 @@ contract SubscriptionTest is TestBase {
         subscription.renew(ALICE);
         vm.prank(ALICE);
         subscription.cancel();
-        vm.warp(block.timestamp + 31 days);
+        vm.warp(vm.getBlockTimestamp() + 31 days);
         vm.expectRevert(Subscription.NotReady.selector);
         subscription.renew(ALICE);
         vm.prank(BOB);
@@ -61,10 +61,10 @@ contract SubscriptionTest is TestBase {
         vm.prank(ALICE);
         subscription.subscribe();
         eq(subscription.revenue(), 10e6);
-        vm.warp(block.timestamp + 365 days);
+        vm.warp(vm.getBlockTimestamp() + 365 days);
         subscription.renew(ALICE);
         eq(subscription.revenue(), 20e6);
-        eq(subscription.paidUntil(ALICE), block.timestamp + 30 days);
+        eq(subscription.paidUntil(ALICE), vm.getBlockTimestamp() + 30 days);
     }
 
     function testMerchantCannotStealPrepaidAndCallerCannotStealRevenue() public {
@@ -84,6 +84,7 @@ contract SubscriptionTest is TestBase {
         eq(subscription.prepaid(ALICE), 99e6);
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzAccountingConservation(uint256 raw) public {
         uint256 amount = bound(raw, 10e6, 1000e6);
         vm.startPrank(ALICE);
@@ -94,5 +95,61 @@ contract SubscriptionTest is TestBase {
         vm.prank(CAROL);
         subscription.withdrawRevenue(10e6);
         eq(subscription.totalPrepaid(), token.balanceOf(address(subscription)));
+    }
+
+    function testInsufficientFundsSubscribeRollbackDoesNotLeaveOptIn() public {
+        vm.prank(ALICE);
+        subscription.deposit(1e6);
+        vm.prank(ALICE);
+        vm.expectRevert(Subscription.InvalidInput.selector);
+        subscription.subscribe();
+        ok(!subscription.autoRenew(ALICE));
+        eq(subscription.prepaid(ALICE), 1e6);
+        eq(subscription.paidUntil(ALICE), 0);
+        eq(subscription.revenue(), 0);
+    }
+
+    function testRevertedTaxedWithdrawalsKeepPrepaidAndMerchantRevenue() public {
+        subscribe();
+        token.setTax(100);
+        vm.prank(ALICE);
+        vm.expectRevert();
+        subscription.withdraw(90e6, 90e6);
+        eq(subscription.totalPrepaid(), 90e6);
+        eq(subscription.prepaid(ALICE), 90e6);
+        vm.prank(CAROL);
+        vm.expectRevert();
+        subscription.withdrawRevenue(10e6);
+        eq(subscription.revenue(), 10e6);
+        eq(token.balanceOf(address(subscription)), 100e6);
+        vm.prank(ALICE);
+        subscription.withdraw(90e6, 891e5);
+        vm.prank(CAROL);
+        subscription.withdrawRevenue(99e5);
+        eq(token.balanceOf(address(subscription)), 0);
+    }
+
+    function testExactExpiryAllowsOneRenewalAndRejectsSecond() public {
+        subscribe();
+        uint256 expiry = subscription.paidUntil(ALICE);
+        vm.warp(expiry - 1);
+        vm.expectRevert(Subscription.NotReady.selector);
+        subscription.renew(ALICE);
+        vm.warp(expiry);
+        subscription.renew(ALICE);
+        vm.expectRevert(Subscription.NotReady.selector);
+        subscription.renew(ALICE);
+        eq(subscription.paidUntil(ALICE), expiry + 30 days);
+        eq(subscription.revenue(), 20e6);
+    }
+
+    event Cancelled(address indexed subscriber);
+
+    function testBusinessEventIncludesActorAndAmount() public {
+        subscribe();
+        vm.expectEmit(true, false, false, true, address(subscription));
+        emit Cancelled(ALICE);
+        vm.prank(ALICE);
+        subscription.cancel();
     }
 }

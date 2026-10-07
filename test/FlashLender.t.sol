@@ -89,11 +89,38 @@ contract FlashLenderTest is TestBase {
         eq(token.balanceOf(address(lender)), 10000e6);
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzFeeAndConservation(uint256 raw) public {
         uint256 amount = bound(raw, 1, 10000e6);
         uint256 fee = lender.flashFee(address(token), amount);
         borrower.run(amount, 0);
         eq(token.balanceOf(address(lender)), 10000e6 + fee);
         eq(fee, (amount * 9 + 9999) / 10000);
+    }
+
+    function testZeroAndExcessLoansNeverCallBorrowerOrMoveFunds() public {
+        vm.expectRevert(FlashLender.InvalidInput.selector);
+        borrower.run(0, 0);
+        vm.expectRevert(FlashLender.InvalidInput.selector);
+        borrower.run(10000e6 + 1, 0);
+        eq(token.balanceOf(address(lender)), 10000e6);
+        eq(token.balanceOf(address(borrower)), 100e6);
+    }
+
+    function testRevertedOwnerOutputMinimumLeavesCapitalIntact() public {
+        token.setTax(100);
+        vm.expectRevert();
+        lender.withdraw(100e6, 100e6);
+        eq(token.balanceOf(address(lender)), 10000e6);
+        lender.withdraw(100e6, 99e6);
+        eq(token.balanceOf(address(this)), 99e6);
+    }
+
+    event Withdrawn(address indexed owner, uint256 amount);
+
+    function testBusinessEventIncludesActorAndAmount() public {
+        vm.expectEmit(true, false, false, true, address(lender));
+        emit Withdrawn(address(this), 100e6);
+        lender.withdraw(100e6, 100e6);
     }
 }

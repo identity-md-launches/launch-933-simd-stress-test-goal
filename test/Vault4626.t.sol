@@ -37,7 +37,7 @@ contract Vault4626Test is TestBase {
         vault.requestRedeem(shares / 2);
         vm.expectRevert(Vault4626.NotReady.selector);
         vault.processNext();
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         vm.prank(BOB);
         vault.processNext();
         eq(vault.claimable(address(this)), 50e6);
@@ -84,7 +84,7 @@ contract Vault4626Test is TestBase {
         vm.expectRevert();
         vault.redeem(shares, address(this), address(this));
         vault.requestRedeem(shares);
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         vault.processNext();
         vault.claim(9801e4);
         eq(vault.totalAssets(), 0);
@@ -103,6 +103,7 @@ contract Vault4626Test is TestBase {
         ok(recovered < 1000e6);
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzNoRoundTripProfit(uint256 raw, uint256 donation) public {
         uint256 amount = bound(raw, 1, 1000e6);
         donation = bound(donation, 0, 1000e6);
@@ -122,10 +123,59 @@ contract Vault4626Test is TestBase {
         callback.approve(address(guarded), 20 ether);
         uint256 shares = guarded.deposit(10 ether, address(this));
         guarded.requestRedeem(shares);
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         callback.configure(address(guarded), abi.encodeCall(guarded.processNext, ()));
         guarded.deposit(10 ether, address(this));
         ok(callback.blocked());
         eq(guarded.head(), 0);
+    }
+
+    function testQueueFailureDoesNotCreatePhantomRequests() public {
+        vm.expectRevert(Vault4626.InvalidInput.selector);
+        vault.requestRedeem(0);
+        vm.expectRevert();
+        vault.requestRedeem(1);
+        eq(vault.tail(), 0);
+        vm.expectRevert(Vault4626.NotReady.selector);
+        vault.processNext();
+        uint256 shares = vault.deposit(100e6, address(this));
+        uint256 id = vault.requestRedeem(shares);
+        vault.cancelRequest(id);
+        vm.expectRevert(Vault4626.InvalidInput.selector);
+        vault.cancelRequest(id);
+        vault.processNext();
+        eq(vault.head(), vault.tail());
+        eq(vault.reservedAssets(), 0);
+    }
+
+    function testRevertedClaimPreservesReservationAndCanRetry() public {
+        uint256 shares = vault.deposit(100e6, address(this));
+        vault.requestRedeem(shares);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        vault.processNext();
+        token.setTax(100);
+        vm.expectRevert();
+        vault.claim(100e6);
+        eq(vault.claimable(address(this)), 100e6);
+        eq(vault.reservedAssets(), 100e6);
+        eq(token.balanceOf(address(vault)), 100e6);
+        vault.claim(99e6);
+        eq(vault.reservedAssets(), 0);
+    }
+
+    function testCapReductionCannotFreezeExistingAssets() public {
+        uint256 shares = vault.deposit(100e6, address(this));
+        vault.setCap(0);
+        vm.expectRevert();
+        vault.deposit(1, ALICE);
+        eq(vault.redeem(shares, address(this), address(this)), 100e6);
+    }
+
+    event CapSet(uint256 cap);
+
+    function testBusinessEventIncludesActorAndAmount() public {
+        vm.expectEmit(false, false, false, true, address(vault));
+        emit CapSet(100e6);
+        vault.setCap(100e6);
     }
 }

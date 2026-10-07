@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 interface Vm {
     function warp(uint256) external;
+    function getBlockTimestamp() external view returns (uint256);
     function roll(uint256) external;
     function prank(address) external;
     function startPrank(address) external;
@@ -13,6 +14,8 @@ interface Vm {
     function expectRevert(bytes calldata) external;
     function sign(uint256, bytes32) external returns (uint8, bytes32, bytes32);
     function addr(uint256) external returns (address);
+    function chainId(uint256) external;
+    function expectEmit(bool, bool, bool, bool, address) external;
 }
 
 abstract contract TestBase {

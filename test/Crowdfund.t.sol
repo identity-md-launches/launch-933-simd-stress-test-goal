@@ -72,6 +72,7 @@ contract CrowdfundTest is TestBase {
         campaign.claim();
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzConservation(uint256 raw) public {
         uint256 amount = bound(raw, 1, 20 ether);
         vm.prank(ALICE);
@@ -86,5 +87,43 @@ contract CrowdfundTest is TestBase {
         }
         eq(campaign.totalCredits(), amount);
         eq(address(campaign).balance, amount);
+    }
+
+    function testZeroPledgeAndSuccessfulCampaignRefundRejected() public {
+        vm.prank(ALICE);
+        vm.expectRevert(Crowdfund.InvalidInput.selector);
+        campaign.pledge();
+        vm.prank(ALICE);
+        campaign.pledge{value: 10 ether}();
+        vm.warp(campaign.deadline());
+        vm.prank(ALICE);
+        vm.expectRevert(Crowdfund.WrongState.selector);
+        campaign.refund();
+        vm.prank(CAROL);
+        campaign.claim();
+        vm.prank(ALICE);
+        vm.expectRevert(Crowdfund.WrongState.selector);
+        campaign.refund();
+        eq(campaign.totalCredits(), 10 ether);
+    }
+
+    /// forge-config: default.fuzz.runs = 1000
+    function testFuzzExactDeadlineBlocksAdditionalFunding(uint256 raw) public {
+        uint256 amount = bound(raw, 1, 20 ether);
+        vm.warp(campaign.deadline());
+        vm.prank(ALICE);
+        vm.expectRevert(Crowdfund.WrongState.selector);
+        campaign.pledge{value: amount}();
+        eq(campaign.totalPledged(), 0);
+        eq(address(campaign).balance, 0);
+    }
+
+    event Pledged(address indexed backer, uint256 amount);
+
+    function testBusinessEventIncludesActorAndAmount() public {
+        vm.expectEmit(true, false, false, true, address(campaign));
+        emit Pledged(ALICE, 1 ether);
+        vm.prank(ALICE);
+        campaign.pledge{value: 1 ether}();
     }
 }

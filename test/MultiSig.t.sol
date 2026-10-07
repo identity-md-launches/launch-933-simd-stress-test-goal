@@ -94,11 +94,44 @@ contract MultiSigTest is TestBase {
         ok(!executed);
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzConservation(uint256 raw) public {
         uint256 amount = bound(raw, 0, 10 ether);
         uint256 id = submit(CAROL, amount, "");
         approve(id);
         wallet.execute(id);
         eq(address(wallet).balance + CAROL.balance, 10 ether);
+    }
+
+    function testInvalidOwnerSetsAndThresholds() public {
+        address[] memory owners = new address[](2);
+        owners[0] = ALICE;
+        owners[1] = ALICE;
+        vm.expectRevert(MultiSig.InvalidInput.selector);
+        new MultiSig(owners, 1);
+        owners[1] = address(0);
+        vm.expectRevert(MultiSig.InvalidInput.selector);
+        new MultiSig(owners, 1);
+        owners[1] = BOB;
+        vm.expectRevert(MultiSig.InvalidInput.selector);
+        new MultiSig(owners, 0);
+        vm.expectRevert(MultiSig.InvalidInput.selector);
+        new MultiSig(owners, 3);
+    }
+
+    function testInvalidSubmissionAndDirectAdminActions() public {
+        vm.prank(ALICE);
+        vm.expectRevert(MultiSig.InvalidInput.selector);
+        wallet.submit(address(0), 0, "");
+        vm.prank(ALICE);
+        vm.expectRevert(MultiSig.InvalidInput.selector);
+        wallet.submit(CAROL, 0, new bytes(16385));
+        eq(wallet.transactionCount(), 0);
+        vm.prank(ALICE);
+        vm.expectRevert(MultiSig.Unauthorized.selector);
+        wallet.removeOwner(BOB, 1);
+        vm.prank(ALICE);
+        vm.expectRevert(MultiSig.Unauthorized.selector);
+        wallet.setThreshold(1);
     }
 }

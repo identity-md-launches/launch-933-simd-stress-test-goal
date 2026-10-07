@@ -27,7 +27,7 @@ contract StakingRewardsTest is TestBase {
         staking.fundPeriod(86400e8, 1 days);
         vm.prank(ALICE);
         staking.stake(100e6);
-        vm.warp(block.timestamp + 100);
+        vm.warp(vm.getBlockTimestamp() + 100);
         eq(staking.earned(ALICE), 100e8);
         vm.startPrank(ALICE);
         staking.withdraw(100e6, 100e6);
@@ -43,18 +43,18 @@ contract StakingRewardsTest is TestBase {
         staking.stake(100e6);
         vm.prank(BOB);
         staking.stake(100e6);
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(vm.getBlockTimestamp() + 2 days);
         eq(staking.earned(ALICE), 43200e8);
         eq(staking.earned(BOB), 43200e8);
     }
 
     function testIdleTimeNotGivenToFirstStaker() public {
         staking.fundPeriod(86400e8, 1 days);
-        vm.warp(block.timestamp + 100);
+        vm.warp(vm.getBlockTimestamp() + 100);
         vm.prank(ALICE);
         staking.stake(100e6);
         eq(staking.earned(ALICE), 0);
-        vm.warp(block.timestamp + 10);
+        vm.warp(vm.getBlockTimestamp() + 10);
         eq(staking.earned(ALICE), 10e8);
     }
 
@@ -65,7 +65,7 @@ contract StakingRewardsTest is TestBase {
         staking.fundPeriod(86400e8, 1 days);
         vm.expectRevert(StakingRewards.PeriodActive.selector);
         staking.fundPeriod(86400e8, 1 days);
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(vm.getBlockTimestamp() + 1 days);
         staking.fundPeriod(86400e8, 1 days);
     }
 
@@ -90,18 +90,70 @@ contract StakingRewardsTest is TestBase {
         eq(staking.balanceOf(ALICE), 99e6);
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzRewardSolvency(uint256 raw, uint256 elapsed) public {
         uint256 amount = bound(raw, 1, 100e6);
         elapsed = bound(elapsed, 1, 2 days);
         staking.fundPeriod(86400e8, 1 days);
         vm.prank(ALICE);
         staking.stake(amount);
-        vm.warp(block.timestamp + elapsed);
+        vm.warp(vm.getBlockTimestamp() + elapsed);
         uint256 owed = staking.earned(ALICE);
         ok(owed <= 86400e8);
         vm.prank(ALICE);
         staking.claim(owed);
         eq(reward.balanceOf(ALICE), owed);
         ok(staking.earned(ALICE) <= 1);
+    }
+
+    function testZeroStakeAndUnfundedPeriodRollback() public {
+        vm.prank(ALICE);
+        vm.expectRevert();
+        staking.stake(0);
+        uint256 cash = reward.balanceOf(address(this));
+        vm.expectRevert(StakingRewards.InvalidInput.selector);
+        staking.fundPeriod(3599, 1 hours);
+        eq(reward.balanceOf(address(this)), cash);
+        eq(staking.periodFinish(), 0);
+        vm.expectRevert(StakingRewards.InvalidInput.selector);
+        staking.fundPeriod(1e12, 365 days + 1);
+    }
+
+    function testTaxedWithdrawalFailurePreservesPrincipalAndRewards() public {
+        staking.fundPeriod(86400e8, 1 days);
+        vm.prank(ALICE);
+        staking.stake(100e6);
+        vm.warp(vm.getBlockTimestamp() + 100);
+        stakeToken.setTax(100);
+        vm.prank(ALICE);
+        vm.expectRevert();
+        staking.withdraw(100e6, 100e6);
+        eq(staking.balanceOf(ALICE), 100e6);
+        eq(staking.totalStaked(), 100e6);
+        eq(staking.earned(ALICE), 100e8);
+        vm.prank(ALICE);
+        staking.withdraw(100e6, 99e6);
+        eq(staking.earned(ALICE), 100e8);
+    }
+
+    function testLaterPeriodDoesNotEraseUnclaimedRewards() public {
+        staking.fundPeriod(86400e8, 1 days);
+        vm.prank(ALICE);
+        staking.stake(100e6);
+        vm.warp(staking.periodFinish());
+        staking.fundPeriod(86400e8, 1 days);
+        vm.warp(vm.getBlockTimestamp() + 100);
+        eq(staking.earned(ALICE), 86500e8);
+        vm.prank(ALICE);
+        staking.claim(86500e8);
+        eq(reward.balanceOf(ALICE), 86500e8);
+    }
+
+    event PeriodFunded(uint256 received, uint256 rate, uint256 finish);
+
+    function testBusinessEventIncludesActorAndAmount() public {
+        vm.expectEmit(false, false, false, true, address(staking));
+        emit PeriodFunded(86400e8, 1e8, vm.getBlockTimestamp() + 1 days);
+        staking.fundPeriod(86400e8, 1 days);
     }
 }

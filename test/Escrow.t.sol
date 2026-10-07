@@ -45,7 +45,7 @@ contract EscrowTest is TestBase {
         fund();
         vm.expectRevert(Escrow.WrongState.selector);
         escrow.timeoutRefund();
-        vm.warp(block.timestamp + 10 days);
+        vm.warp(vm.getBlockTimestamp() + 10 days);
         escrow.timeoutRefund();
         eq(escrow.credits(ALICE), 1 ether);
     }
@@ -56,7 +56,7 @@ contract EscrowTest is TestBase {
         escrow.deliver(0);
         vm.prank(BOB);
         escrow.dispute(0);
-        vm.warp(block.timestamp + 7 days);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
         vm.prank(CAROL);
         vm.expectRevert(Escrow.WrongState.selector);
         escrow.resolve(0);
@@ -82,6 +82,7 @@ contract EscrowTest is TestBase {
         escrow.resolve(0);
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzSettlementConservation(uint256 raw) public {
         uint256 refund = bound(raw, 0, 1 ether);
         fund();
@@ -91,5 +92,61 @@ contract EscrowTest is TestBase {
         escrow.resolve(refund);
         eq(escrow.totalCredits(), 1 ether);
         eq(escrow.credits(ALICE) + escrow.credits(BOB), address(escrow).balance);
+    }
+
+    function testWrongPaymentAndDuplicateDepositPreserveEscrow() public {
+        vm.prank(ALICE);
+        vm.expectRevert(Escrow.InvalidInput.selector);
+        escrow.deposit{value: 1 ether - 1}();
+        eq(uint256(escrow.state()), uint256(Escrow.State.AwaitingDeposit));
+        fund();
+        vm.prank(ALICE);
+        vm.expectRevert(Escrow.WrongState.selector);
+        escrow.deposit{value: 1 ether}();
+        eq(address(escrow).balance, 1 ether);
+    }
+
+    function testOversizedResolutionCanRetryAndSettledStateIsTerminal() public {
+        fund();
+        vm.prank(BOB);
+        escrow.dispute(0);
+        vm.prank(CAROL);
+        vm.expectRevert(Escrow.InvalidInput.selector);
+        escrow.resolve(1 ether + 1);
+        eq(uint256(escrow.state()), uint256(Escrow.State.Disputed));
+        eq(escrow.totalCredits(), 0);
+        vm.prank(CAROL);
+        escrow.resolve(0);
+        vm.warp(escrow.refundAt());
+        vm.expectRevert(Escrow.WrongState.selector);
+        escrow.timeoutRefund();
+        vm.prank(ALICE);
+        vm.expectRevert(Escrow.WrongState.selector);
+        escrow.dispute(0);
+        eq(escrow.credits(BOB), 1 ether);
+    }
+
+    function testExactDeliveryDeadlineRejectsDeliveryAndAllowsRefund() public {
+        fund();
+        vm.warp(escrow.deliveryDeadline());
+        vm.prank(BOB);
+        vm.expectRevert(Escrow.WrongState.selector);
+        escrow.deliver(0);
+        vm.prank(ALICE);
+        vm.expectRevert(Escrow.WrongState.selector);
+        escrow.dispute(0);
+        escrow.timeoutRefund();
+        eq(escrow.credits(ALICE), 1 ether);
+    }
+
+    event Delivered(bytes32 indexed evidence, uint256 refundAt);
+
+    function testBusinessEventIncludesActorAndAmount() public {
+        fund();
+        bytes32 evidence = keccak256("delivery");
+        vm.expectEmit(true, false, false, true, address(escrow));
+        emit Delivered(evidence, vm.getBlockTimestamp() + 3 days);
+        vm.prank(BOB);
+        escrow.deliver(evidence);
     }
 }

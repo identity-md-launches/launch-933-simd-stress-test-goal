@@ -129,6 +129,7 @@ contract RaffleTest is TestBase {
         eq(raffle.credits(address(receiver)), 0);
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzRefundSolvency(uint256 raw) public {
         uint256 count = bound(raw, 1, 10);
         for (uint256 i; i < count; ++i) {
@@ -140,5 +141,50 @@ contract RaffleTest is TestBase {
         vm.prank(ALICE);
         raffle.refund();
         eq(raffle.totalCredits(), address(raffle).balance);
+    }
+
+    function testInvalidCommitAndInsufficientBondCanRetry() public {
+        Raffle other = new Raffle(address(this), 1 ether, 10, 1 days, 1 days);
+        vm.deal(address(this), 10 ether);
+        vm.expectRevert(Raffle.InvalidInput.selector);
+        other.open{value: 10 ether}(0);
+        vm.expectRevert(Raffle.InvalidInput.selector);
+        other.open{value: 9 ether}(keccak256("seed"));
+        eq(uint256(other.state()), uint256(Raffle.State.Created));
+        eq(address(other).balance, 0);
+        vm.prank(ALICE);
+        vm.expectRevert(Raffle.Unauthorized.selector);
+        other.open(keccak256("seed"));
+    }
+
+    function testRevertedRevealDoesNotChooseWinnerOrAllocateBond() public {
+        vm.prank(ALICE);
+        raffle.buyTicket{value: 1 ether}();
+        vm.warp(raffle.saleEnd());
+        vm.expectRevert(Raffle.InvalidInput.selector);
+        raffle.reveal(bytes32(uint256(1)));
+        eq(uint256(raffle.state()), uint256(Raffle.State.Open));
+        eq(raffle.winner(), address(0));
+        eq(raffle.totalCredits(), 0);
+        raffle.reveal(SEED);
+        vm.expectRevert(Raffle.WrongState.selector);
+        raffle.reveal(SEED);
+        vm.warp(raffle.revealEnd());
+        vm.expectRevert(Raffle.WrongState.selector);
+        raffle.expire();
+        vm.prank(ALICE);
+        vm.expectRevert(Raffle.WrongState.selector);
+        raffle.refund();
+    }
+
+    event Expired(uint256 refundPerTicket);
+
+    function testBusinessEventIncludesActorAndAmount() public {
+        vm.prank(ALICE);
+        raffle.buyTicket{value: 1 ether}();
+        vm.warp(raffle.revealEnd());
+        vm.expectEmit(false, false, false, true, address(raffle));
+        emit Expired(11 ether);
+        raffle.expire();
     }
 }

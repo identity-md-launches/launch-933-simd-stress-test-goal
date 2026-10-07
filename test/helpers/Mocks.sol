@@ -51,6 +51,7 @@ contract CallbackToken is ERC20 {
     address public callbackTarget;
     bytes public callbackData;
     bool public blocked;
+    bytes4 public callbackError;
     bool private calling;
     constructor() ERC20("Callback", "CALL") {}
 
@@ -67,8 +68,9 @@ contract CallbackToken is ERC20 {
         super._update(from, to, amount);
         if (from != address(0) && to != address(0) && !calling && callbackTarget != address(0)) {
             calling = true;
-            (bool success,) = callbackTarget.call(callbackData);
+            (bool success, bytes memory result) = callbackTarget.call(callbackData);
             blocked = !success;
+            callbackError = result.length >= 4 ? bytes4(result) : bytes4(0);
             calling = false;
         }
     }

@@ -38,24 +38,24 @@ contract PriceOracleAdapterTest is TestBase {
 
     function testNormalizationAndHourBoundary() public {
         eq(adapter.price(), 2000e18);
-        vm.warp(block.timestamp + 1 hours);
+        vm.warp(vm.getBlockTimestamp() + 1 hours);
         eq(adapter.price(), 2000e18);
-        vm.warp(block.timestamp + 1);
+        vm.warp(vm.getBlockTimestamp() + 1);
         vm.expectRevert(PriceOracleAdapter.InvalidPrice.selector);
         adapter.price();
     }
 
     function testNonPositiveFutureAndIncompleteRound() public {
-        feed.configure(0, block.timestamp, 2);
+        feed.configure(0, vm.getBlockTimestamp(), 2);
         vm.expectRevert(PriceOracleAdapter.InvalidPrice.selector);
         adapter.price();
-        feed.configure(-1, block.timestamp, 2);
+        feed.configure(-1, vm.getBlockTimestamp(), 2);
         vm.expectRevert(PriceOracleAdapter.InvalidPrice.selector);
         adapter.price();
-        feed.configure(1e8, block.timestamp + 1, 2);
+        feed.configure(1e8, vm.getBlockTimestamp() + 1, 2);
         vm.expectRevert(PriceOracleAdapter.InvalidPrice.selector);
         adapter.price();
-        feed.configure(1e8, block.timestamp, 1);
+        feed.configure(1e8, vm.getBlockTimestamp(), 1);
         vm.expectRevert(PriceOracleAdapter.InvalidPrice.selector);
         adapter.price();
     }
@@ -63,17 +63,56 @@ contract PriceOracleAdapterTest is TestBase {
     function testHighDecimalFeedAndDustRejection() public {
         PriceFeedMock high = new PriceFeedMock(24);
         PriceOracleAdapter a = new PriceOracleAdapter(IPriceFeed(address(high)));
-        high.configure(2e24, block.timestamp, 2);
+        high.configure(2e24, vm.getBlockTimestamp(), 2);
         eq(a.price(), 2e18);
-        high.configure(1, block.timestamp, 2);
+        high.configure(1, vm.getBlockTimestamp(), 2);
         vm.expectRevert(PriceOracleAdapter.InvalidPrice.selector);
         a.price();
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzNormalization(uint256 raw, uint256 age) public {
         uint256 value = bound(raw, 1, 1e30);
         age = bound(age, 0, 1 hours);
-        feed.configure(int256(value), block.timestamp - age, 2);
+        feed.configure(int256(value), vm.getBlockTimestamp() - age, 2);
         eq(adapter.price(), value * 1e10);
+    }
+
+    function testUnsupportedPrecisionAndEmptyCode() public {
+        vm.expectRevert(PriceOracleAdapter.InvalidFeed.selector);
+        new PriceOracleAdapter(IPriceFeed(ALICE));
+        PriceFeedMock invalid = new PriceFeedMock(37);
+        vm.expectRevert(PriceOracleAdapter.InvalidFeed.selector);
+        new PriceOracleAdapter(IPriceFeed(address(invalid)));
+        feed.configure(1e8, 0, 2);
+        vm.expectRevert(PriceOracleAdapter.InvalidPrice.selector);
+        adapter.price();
+    }
+
+    /// forge-config: default.fuzz.runs = 1000
+    function testFuzzEverySupportedDecimalAndDust(uint256 raw, uint8 decimals) public {
+        decimals %= 37;
+        uint256 answer = bound(raw, 1, 1e36);
+        PriceFeedMock source = new PriceFeedMock(decimals);
+        PriceOracleAdapter normalized = new PriceOracleAdapter(IPriceFeed(address(source)));
+        source.configure(int256(answer), vm.getBlockTimestamp(), 2);
+        uint256 unit = 10 ** uint256(decimals);
+        uint256 expected = answer * 1e18 / unit;
+        if (expected == 0) {
+            vm.expectRevert(PriceOracleAdapter.InvalidPrice.selector);
+            normalized.price();
+        } else {
+            uint256 result = normalized.price();
+            ok(result * unit <= answer * 1e18);
+            ok((result + 1) * unit > answer * 1e18);
+        }
+    }
+
+    /// forge-config: default.fuzz.runs = 1000
+    function testFuzzStalePricesAlwaysRevert(uint256 raw) public {
+        uint256 age = bound(raw, 1 hours + 1, 30 days);
+        feed.configure(2000e8, vm.getBlockTimestamp() - age, 2);
+        vm.expectRevert(PriceOracleAdapter.InvalidPrice.selector);
+        adapter.price();
     }
 }

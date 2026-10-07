@@ -114,6 +114,7 @@ contract NFTMarketplaceTest is TestBase {
         eq(market.credits(address(seller)), 0.975 ether);
     }
 
+    /// forge-config: default.fuzz.runs = 1000
     function testFuzzFeeConservation(uint256 raw) public {
         uint256 price = bound(raw, 1, 100 ether);
         uint256 id = listing(price);
@@ -121,5 +122,45 @@ contract NFTMarketplaceTest is TestBase {
         market.buy{value: price}(id, BOB);
         eq(market.credits(ALICE) + market.credits(CAROL), price);
         eq(market.credits(CAROL), price * 250 / 10000);
+    }
+
+    function testRejectedNFTReceiverRollsBackSaleAndCredits() public {
+        uint256 id = listing(1 ether);
+        vm.prank(BOB);
+        vm.expectRevert();
+        market.buy{value: 1 ether}(id, address(this));
+        (,,,, bool active) = market.listings(id);
+        ok(active);
+        eq(nft.ownerOf(1), address(market));
+        eq(market.totalCredits(), 0);
+        eq(address(market).balance, 0);
+        vm.prank(BOB);
+        market.buy{value: 1 ether}(id, BOB);
+        eq(nft.ownerOf(1), BOB);
+    }
+
+    function testMissingApprovalAndZeroPriceCannotCreateListing() public {
+        vm.prank(ALICE);
+        nft.approve(address(0), 1);
+        vm.prank(ALICE);
+        vm.expectRevert();
+        market.list(nft, 1, 1 ether);
+        eq(market.listingCount(), 0);
+        eq(nft.ownerOf(1), ALICE);
+        vm.prank(ALICE);
+        vm.expectRevert(NFTMarketplace.InvalidInput.selector);
+        market.list(nft, 1, 0);
+        vm.expectRevert(NFTMarketplace.InvalidInput.selector);
+        market.cancel(99);
+    }
+
+    event Listed(
+        uint256 indexed id, address indexed seller, address indexed nft, uint256 tokenId, uint256 price
+    );
+
+    function testBusinessEventIncludesActorAndAmount() public {
+        vm.expectEmit(true, true, true, true, address(market));
+        emit Listed(0, ALICE, address(nft), 1, 1 ether);
+        listing(1 ether);
     }
 }
